@@ -4,7 +4,7 @@ mod utils;
 
 use colored::*;
 use devices::*;
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use monitor::{cpu, gpu};
 use std::process::exit;
 use utils::{args::Args, status::*};
@@ -71,19 +71,32 @@ fn main() {
                         // Match dedicated GPU
                         for gpu in gpus.iter() {
                             if gpu.vendor == vendor && gpu.bus > 0 {
-                                if nth == id { device = Some(gpu.clone()); break; }
-                                else { nth += 1; }
+                                if nth == id {
+                                    device = Some(gpu.clone());
+                                    break;
+                                } else {
+                                    nth += 1;
+                                }
                             }
                         }
                     } else {
                         // Match integrated (first) GPU
                         let first_gpu = gpus.first().unwrap();
-                        if first_gpu.vendor == vendor && first_gpu.bus == 0 { device = Some(first_gpu.clone()) }
+                        if first_gpu.vendor == vendor && first_gpu.bus == 0 {
+                            device = Some(first_gpu.clone())
+                        }
                     }
-                    device.or_else(|| { error!("No GPU was found with the specified GPUID"); exit(1) })
-                },
+                    device.or_else(|| {
+                        error!("No GPU was found with the specified GPUID");
+                        exit(1)
+                    })
+                }
                 // Find the first dedicated GPU if present; otherwise, use the iGPU
-                None => gpus.iter().find(|gpu| gpu.bus > 0).cloned().or_else(|| gpus.first().cloned()),
+                None => gpus
+                    .iter()
+                    .find(|gpu| gpu.bus > 0)
+                    .cloned()
+                    .or_else(|| gpus.first().cloned()),
             }
         }
     };
@@ -104,30 +117,48 @@ fn main() {
         error!(err);
         exit(1);
     });
-    let mut product_id = 0;
-    for device in api.device_list() {
-        if device.vendor_id() == DEFAULT_VENDOR_ID {
-            if args.pid == 0 || device.product_id() == args.pid {
-                product_id = device.product_id();
-                println!("Device found: {}", device.product_string().unwrap().bright_green());
-                break;
-            }
-        } else if device.vendor_id() == CH510_VENDOR_ID && device.product_id() == CH510_PRODUCT_ID {
-            if args.pid == 0 || device.product_id() == args.pid {
-                product_id = device.product_id();
-                println!("Device found: {}", "CH510-MESH-DIGITAL".bright_green());
-                break;
+
+    // If --hidraw is passed, we open that path directly and require --pid
+    let (product_id, forced_device): (u16, Option<HidDevice>) = if let Some(path) = &args.hidraw {
+        if args.pid == 0 {
+            error!("--hidraw requires --pid (e.g. --pid 16)");
+            exit(1);
+        }
+
+        let dev = api.open_path(path).unwrap_or_else(|_| device_error());
+        println!("Device found: {}", format!("hidraw={}", path).bright_green());
+
+        (args.pid, Some(dev))
+    } else {
+        let mut pid_found = 0u16;
+
+        for device in api.device_list() {
+            if device.vendor_id() == DEFAULT_VENDOR_ID {
+                if args.pid == 0 || device.product_id() == args.pid {
+                    pid_found = device.product_id();
+                    println!("Device found: {}", device.product_string().unwrap().bright_green());
+                    break;
+                }
+            } else if device.vendor_id() == CH510_VENDOR_ID && device.product_id() == CH510_PRODUCT_ID {
+                if args.pid == 0 || device.product_id() == args.pid {
+                    pid_found = device.product_id();
+                    println!("Device found: {}", "CH510-MESH-DIGITAL".bright_green());
+                    break;
+                }
             }
         }
-    }
-    if product_id == 0 {
-        if args.pid > 0 {
-            error!("No DeepCool device was found with the specified PID");
-        } else {
-            error!("No DeepCool device was found");
+
+        if pid_found == 0 {
+            if args.pid > 0 {
+                error!("No DeepCool device was found with the specified PID");
+            } else {
+                error!("No DeepCool device was found");
+            }
+            exit(1);
         }
-        exit(1);
-    }
+
+        (pid_found, None)
+    };
 
     // Initialize CPU & GPU monitoring
     let cpu = cpu::Cpu::new();
@@ -137,17 +168,30 @@ fn main() {
     match product_id {
         // AK Series
         1..=4 => {
-            println!("Supported modes: {} [default: {}]", "auto cpu_temp cpu_usage".bold(), ak_series::DEFAULT_MODE.symbol());
+            println!(
+                "Supported modes: {} [default: {}]",
+                "auto cpu_temp cpu_usage".bold(),
+                ak_series::DEFAULT_MODE.symbol()
+            );
             // Connect to device
-            let ak_device = ak_series::Display::new(cpu, &args.mode, args.update, args.fahrenheit, args.alarm);
+            let ak_device =
+                ak_series::Display::new(cpu, &args.mode, args.update, args.fahrenheit, args.alarm);
             // Print current configuration & warnings
             print_device_status(
                 &ak_device.mode,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
                 Alarm {
-                    state: if args.alarm { AlarmState::On } else { AlarmState::Off },
+                    state: if args.alarm {
+                        AlarmState::On
+                    } else {
+                        AlarmState::Off
+                    },
                     temp_limit: if args.fahrenheit {
                         ak_series::TEMP_LIMIT_F
                     } else {
@@ -162,19 +206,33 @@ fn main() {
             // Display loop
             ak_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // LS Series
         6 => {
-            println!("Supported modes: {} [default: {}]", "auto cpu_temp cpu_power".bold(), ls_series::DEFAULT_MODE.symbol());
+            println!(
+                "Supported modes: {} [default: {}]",
+                "auto cpu_temp cpu_power".bold(),
+                ls_series::DEFAULT_MODE.symbol()
+            );
             // Connect to device
-            let ls_device = ls_series::Display::new(cpu, &args.mode, args.update, args.fahrenheit, args.alarm);
+            let ls_device =
+                ls_series::Display::new(cpu, &args.mode, args.update, args.fahrenheit, args.alarm);
             // Print current configuration & warnings
             print_device_status(
                 &ls_device.mode,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
                 Alarm {
-                    state: if args.alarm { AlarmState::On } else { AlarmState::Off },
+                    state: if args.alarm {
+                        AlarmState::On
+                    } else {
+                        AlarmState::Off
+                    },
                     temp_limit: if args.fahrenheit {
                         ls_series::TEMP_LIMIT_F
                     } else {
@@ -189,9 +247,14 @@ fn main() {
             // Display loop
             ls_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // AG Series
         8 => {
-            println!("Supported modes: {} [default: {}]", "auto cpu_temp cpu_usage".bold(), ag_series::DEFAULT_MODE.symbol());
+            println!(
+                "Supported modes: {} [default: {}]",
+                "auto cpu_temp cpu_usage".bold(),
+                ag_series::DEFAULT_MODE.symbol()
+            );
             // Connect to device
             let ag_device = ag_series::Display::new(cpu, &args.mode, args.update, args.alarm);
             // Print current configuration & warnings
@@ -201,7 +264,11 @@ fn main() {
                 None,
                 TemperatureUnit::Celsius,
                 Alarm {
-                    state: if args.alarm { AlarmState::On } else { AlarmState::Off },
+                    state: if args.alarm {
+                        AlarmState::On
+                    } else {
+                        AlarmState::Off
+                    },
                     temp_limit: ag_series::TEMP_LIMIT_C,
                     temp_warning: 0,
                 },
@@ -213,6 +280,7 @@ fn main() {
             // Display loop
             ag_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // LD Series
         10 => {
             println!("Supported modes: {}", "auto".bold());
@@ -223,7 +291,11 @@ fn main() {
                 &ld_series::DEFAULT_MODE,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
                 Alarm {
                     state: AlarmState::Auto,
                     temp_limit: if args.fahrenheit {
@@ -242,6 +314,7 @@ fn main() {
             // Display loop
             ld_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // LP Series
         12 => {
             println!(
@@ -254,20 +327,37 @@ fn main() {
                 "cpu_usage cpu_temp cpu_power gpu_usage gpu_temp gpu_power".bold()
             );
             // Connect to device
-            let lp_device = lp_series::Display::new(cpu, gpu, &args.mode, &args.secondary, args.update, args.fahrenheit, args.rotate);
+            let lp_device = lp_series::Display::new(
+                cpu,
+                gpu,
+                &args.mode,
+                &args.secondary,
+                args.update,
+                args.fahrenheit,
+                args.rotate,
+            );
             // Print current configuration & warnings
             print_device_status(
                 &lp_device.mode,
                 lp_device.secondary.as_ref(),
                 Some(args.rotate),
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
-                Alarm { state: AlarmState::NotSupported, temp_limit: 0, temp_warning: 0 },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
+                Alarm {
+                    state: AlarmState::NotSupported,
+                    temp_limit: 0,
+                    temp_warning: 0,
+                },
                 args.update,
             );
             common_warnings::alarm(&args);
             // Display loop
             lp_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // LQ Series & ASSASSIN IV
         13 | 15 | 31 => {
             println!("Supported modes: {}", "auto".bold());
@@ -278,7 +368,11 @@ fn main() {
                 &lq_series::DEFAULT_MODE,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
                 Alarm {
                     state: AlarmState::Auto,
                     temp_limit: if args.fahrenheit {
@@ -301,6 +395,7 @@ fn main() {
             // Display loop
             lq_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // AK400 PRO
         16 => {
             println!("Supported modes: {}", "auto".bold());
@@ -311,7 +406,11 @@ fn main() {
                 &ak400_pro::DEFAULT_MODE,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
                 Alarm {
                     state: AlarmState::Auto,
                     temp_limit: if args.fahrenheit {
@@ -331,9 +430,15 @@ fn main() {
             common_warnings::secondary_mode(&args);
             common_warnings::alarm_hardcoded(&args);
             common_warnings::rotate(&args);
-            // Display loop
-            ak400_pro.run(&api, DEFAULT_VENDOR_ID, product_id);
+
+            // Display loop (forced hidraw path overrides enumeration)
+            if let Some(dev) = forced_device {
+                ak400_pro.run_device(dev);
+            } else {
+                ak400_pro.run(&api, DEFAULT_VENDOR_ID, product_id);
+            }
         }
+
         // AK500 / AK620 PRO
         17 | 18 => {
             println!("Supported modes: {}", "auto".bold());
@@ -344,7 +449,11 @@ fn main() {
                 &ak620_pro::DEFAULT_MODE,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
                 Alarm {
                     state: AlarmState::Auto,
                     temp_limit: if args.fahrenheit {
@@ -367,6 +476,7 @@ fn main() {
             // Display loop
             ak620_pro.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // CH170 | CH270 | CH690
         19 | 22 | 27 => {
             println!(
@@ -378,14 +488,23 @@ fn main() {
                 ch_series_gen2::DEFAULT_MODE.symbol()
             );
             // Connect to device
-            let ch_gen2_device = ch_series_gen2::Display::new(cpu, gpu, &args.mode, args.update, args.fahrenheit);
+            let ch_gen2_device =
+                ch_series_gen2::Display::new(cpu, gpu, &args.mode, args.update, args.fahrenheit);
             // Print current configuration & warnings
             print_device_status(
                 &ch_gen2_device.mode,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
-                Alarm { state: AlarmState::NotSupported, temp_limit: 0, temp_warning: 0 },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
+                Alarm {
+                    state: AlarmState::NotSupported,
+                    temp_limit: 0,
+                    temp_warning: 0,
+                },
                 args.update,
             );
             common_warnings::secondary_mode(&args);
@@ -394,19 +513,39 @@ fn main() {
             // Display loop
             ch_gen2_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // CH Series & MORPHEUS
         5 | 7 | 21 => {
-            println!("Supported modes: {} [default: {}]", "auto cpu_temp cpu_usage".bold(), ch_series::DEFAULT_MODE.symbol());
+            println!(
+                "Supported modes: {} [default: {}]",
+                "auto cpu_temp cpu_usage".bold(),
+                ch_series::DEFAULT_MODE.symbol()
+            );
             println!("Supported secondary: {}", "gpu_temp gpu_usage".bold());
             // Connect to device
-            let ch_device = ch_series::Display::new(cpu, gpu, &args.mode, &args.secondary, args.update, args.fahrenheit);
+            let ch_device = ch_series::Display::new(
+                cpu,
+                gpu,
+                &args.mode,
+                &args.secondary,
+                args.update,
+                args.fahrenheit,
+            );
             // Print current configuration & warnings
             print_device_status(
                 &ch_device.mode,
                 Some(&ch_device.secondary),
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
-                Alarm { state: AlarmState::NotSupported, temp_limit: 0, temp_warning: 0 },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
+                Alarm {
+                    state: AlarmState::NotSupported,
+                    temp_limit: 0,
+                    temp_warning: 0,
+                },
                 args.update,
             );
             common_warnings::alarm(&args);
@@ -414,9 +553,14 @@ fn main() {
             // Display loop
             ch_device.run(&api, DEFAULT_VENDOR_ID, product_id);
         }
+
         // CH510
         CH510_PRODUCT_ID => {
-            println!("Supported modes: {} [default: {}]", "cpu gpu".bold(), ch510::DEFAULT_MODE.symbol());
+            println!(
+                "Supported modes: {} [default: {}]",
+                "cpu gpu".bold(),
+                ch510::DEFAULT_MODE.symbol()
+            );
             // Connect to device
             let ch510 = ch510::Display::new(cpu, gpu, &args.mode, args.update, args.fahrenheit);
             // Print current configuration & warnings
@@ -424,8 +568,16 @@ fn main() {
                 &ch510.mode,
                 None,
                 None,
-                if args.fahrenheit { TemperatureUnit::Fahrenheit } else { TemperatureUnit::Celsius },
-                Alarm { state: AlarmState::NotSupported, temp_limit: 0, temp_warning: 0 },
+                if args.fahrenheit {
+                    TemperatureUnit::Fahrenheit
+                } else {
+                    TemperatureUnit::Celsius
+                },
+                Alarm {
+                    state: AlarmState::NotSupported,
+                    temp_limit: 0,
+                    temp_warning: 0,
+                },
                 args.update,
             );
             common_warnings::secondary_mode(&args);
@@ -434,15 +586,24 @@ fn main() {
             // Display loop
             ch510.run(&api, CH510_VENDOR_ID, product_id);
         }
+
         _ => {
             println!("Device not yet supported!");
             println!("\nPlease create an issue on GitHub providing your device name and the following information:");
-            let device = api.open(DEFAULT_VENDOR_ID, product_id).unwrap_or_else(|_| device_error());
+            let device = api
+                .open(DEFAULT_VENDOR_ID, product_id)
+                .unwrap_or_else(|_| device_error());
             let info = device.get_device_info().unwrap();
             println!("Vendor ID: {}", info.vendor_id().to_string().bright_cyan());
             println!("Device ID: {}", info.product_id().to_string().bright_cyan());
-            println!("Vendor name: {}", info.manufacturer_string().unwrap().bright_cyan());
-            println!("Device name: {}", info.product_string().unwrap().bright_cyan());
+            println!(
+                "Vendor name: {}",
+                info.manufacturer_string().unwrap().bright_cyan()
+            );
+            println!(
+                "Device name: {}",
+                info.product_string().unwrap().bright_cyan()
+            );
         }
     }
 }

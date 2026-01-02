@@ -3,7 +3,7 @@
 
 use crate::monitor::cpu::Cpu;
 use super::{device_error, Mode};
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use std::{thread::sleep, time::Duration};
 
 pub const DEFAULT_MODE: Mode = Mode::Auto;
@@ -28,15 +28,19 @@ impl Display {
         }
     }
 
+    /// Original entrypoint (enumeration by VID/PID).
     pub fn run(&self, api: &HidApi, vid: u16, pid: u16) {
-        // Connect to device
         let device = api.open(vid, pid).unwrap_or_else(|_| device_error());
+        self.run_device(device);
+    }
 
+    /// New entrypoint (already opened device, e.g. via --hidraw + open_path()).
+    pub fn run_device(&self, device: HidDevice) {
         // Display warning if a required module is missing
         self.cpu.warn_temp();
         self.cpu.warn_rapl();
 
-        // Data packet
+        // Data packet base
         let mut data: [u8; 64] = [0; 64];
         data[0] = 16;
         data[1] = 104;
@@ -47,10 +51,8 @@ impl Display {
         data[6] = 2;
         data[7] = 5;
 
-        // Display loop
         loop {
-            // Initialize the packet
-            let mut status_data = data.clone();
+            let mut status_data = data;
 
             // Read CPU utilization & energy consumption
             let cpu_instant = self.cpu.read_instant();
@@ -59,9 +61,11 @@ impl Display {
             // Wait
             sleep(self.update);
 
-            // ----- Write data to the package -----
             // Power consumption
-            let power = (self.cpu.get_power(cpu_energy, self.update.as_millis() as u64)).to_be_bytes();
+            let power = self
+                .cpu
+                .get_power(cpu_energy, self.update.as_millis() as u64)
+                .to_be_bytes();
             status_data[8] = power[0];
             status_data[9] = power[1];
 

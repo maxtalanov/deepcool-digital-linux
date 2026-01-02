@@ -1,4 +1,9 @@
-use crate::{devices::Mode, error, monitor::gpu::pci::{get_gpu_list, Vendor}, CH510_PRODUCT_ID, CH510_VENDOR_ID, DEFAULT_VENDOR_ID};
+use crate::{
+    devices::Mode,
+    error,
+    monitor::gpu::pci::{get_gpu_list, Vendor},
+    CH510_PRODUCT_ID, CH510_VENDOR_ID, DEFAULT_VENDOR_ID,
+};
 use colored::*;
 use hidapi::HidApi;
 use std::{collections::HashMap, env::args, process::exit, time::Duration};
@@ -12,6 +17,7 @@ pub struct Args {
     pub fahrenheit: bool,
     pub alarm: bool,
     pub rotate: u16,
+    pub hidraw: Option<String>,
 }
 
 impl Args {
@@ -25,10 +31,20 @@ impl Args {
         let mut fahrenheit = false;
         let mut alarm = false;
         let mut rotate = 0;
+        let mut hidraw: Option<String> = None;
 
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
+                "--hidraw" => {
+                    if i + 1 < args.len() {
+                        hidraw = Some(args[i + 1].clone());
+                        i += 1;
+                    } else {
+                        error!("--hidraw requires a value");
+                        exit(1);
+                    }
+                }
                 "-m" | "--mode" => {
                     if i + 1 < args.len() {
                         mode = match Mode::get(&args[i + 1]) {
@@ -62,16 +78,11 @@ impl Args {
                 "--pid" => {
                     if i + 1 < args.len() {
                         match args[i + 1].parse::<u16>() {
-                            Ok(id) => {
-                                if id > 0 {
-                                    pid = id;
-                                    i += 1;
-                                } else {
-                                    error!("Invalid PID");
-                                    exit(1);
-                                }
+                            Ok(id) if id > 0 => {
+                                pid = id;
+                                i += 1;
                             }
-                            Err(_) => {
+                            _ => {
                                 error!("Invalid PID");
                                 exit(1);
                             }
@@ -104,14 +115,13 @@ impl Args {
                 "-u" | "--update" => {
                     if i + 1 < args.len() {
                         match args[i + 1].parse::<u64>() {
-                            Ok(val) => {
-                                if val >= 100 && val <= 2000 {
-                                    update = Duration::from_millis(val);
-                                    i += 1;
-                                } else {
-                                    error!("Update interval must be between 100 and 2000");
-                                    exit(1);
-                                }
+                            Ok(val) if (100..=2000).contains(&val) => {
+                                update = Duration::from_millis(val);
+                                i += 1;
+                            }
+                            Ok(_) => {
+                                error!("Update interval must be between 100 and 2000");
+                                exit(1);
                             }
                             Err(_) => {
                                 error!("Invalid update interval");
@@ -132,14 +142,13 @@ impl Args {
                 "-r" | "--rotate" => {
                     if i + 1 < args.len() {
                         match args[i + 1].parse::<u16>() {
-                            Ok(val) => {
-                                if [90, 180, 270].contains(&val) {
-                                    rotate = val;
-                                    i += 1;
-                                } else {
-                                    error!("Rotation value must be one of 90, 180, or 270");
-                                    exit(1);
-                                }
+                            Ok(val) if [90, 180, 270].contains(&val) => {
+                                rotate = val;
+                                i += 1;
+                            }
+                            Ok(_) => {
+                                error!("Rotation value must be one of 90, 180, or 270");
+                                exit(1);
                             }
                             Err(_) => {
                                 error!("Invalid rotation value");
@@ -152,7 +161,11 @@ impl Args {
                     }
                 }
                 "-l" | "--list" => {
-                    println!("Device list [{} | {}]", "PID".bright_green().bold(), "Name".bright_green());
+                    println!(
+                        "Device list [{} | {}]",
+                        "PID".bright_green().bold(),
+                        "Name".bright_green()
+                    );
                     println!("-----");
                     let api = HidApi::new().unwrap_or_else(|err| {
                         error!(err);
@@ -167,7 +180,9 @@ impl Args {
                                 device.product_id().to_string().bright_green().bold(),
                                 device.product_string().unwrap().bright_green()
                             );
-                        } else if device.vendor_id() == CH510_VENDOR_ID && device.product_id() == CH510_PRODUCT_ID {
+                        } else if device.vendor_id() == CH510_VENDOR_ID
+                            && device.product_id() == CH510_PRODUCT_ID
+                        {
                             products += 1;
                             println!(
                                 "{} | {}",
@@ -182,7 +197,12 @@ impl Args {
                     exit(0);
                 }
                 "-g" | "--gpulist" => {
-                    println!("GPU list [{} | {} {}]", "ID".bright_green().bold(), "Name".bright_green(), "(PCI Address)".bright_black());
+                    println!(
+                        "GPU list [{} | {} {}]",
+                        "ID".bright_green().bold(),
+                        "Name".bright_green(),
+                        "(PCI Address)".bright_black()
+                    );
                     println!("-----");
                     let gpus = get_gpu_list();
                     let mut gpu_ids = HashMap::new();
@@ -191,12 +211,14 @@ impl Args {
                         *nth += 1;
                         println!(
                             "{} | {} {}",
-                            format!("{}:{}", gpu.vendor.name().to_lowercase(), *nth).bright_green().bold(),
+                            format!("{}:{}", gpu.vendor.name().to_lowercase(), *nth)
+                                .bright_green()
+                                .bold(),
                             gpu.name.bright_green(),
                             format!("({})", gpu.address).bright_black(),
                         );
                     }
-                    if gpus.len() == 0 {
+                    if gpus.is_empty() {
                         println!("{}", "No GPUs were found".bright_black().italic())
                     }
                     exit(0);
@@ -204,19 +226,65 @@ impl Args {
                 "-h" | "--help" => {
                     println!("{} [OPTIONS]", "Usage: deepcool-digital-linux".bold());
                     println!("\n{}", "Options:".bold());
-                    println!("  {}, {} <MODE>       Change the display mode of your device", "-m".bold(), "--mode".bold());
-                    println!("  {}, {} <MODE>  Change the secondary display mode of your device (if supported)", "-s".bold(), "--secondary".bold());
-                    println!("      {} <ID>          Specify the Product ID if multiple devices are connected", "--pid".bold());
-                    println!("      {} <VENDOR:ID> Specify the nth GPU of a specific vendor to monitor (use ID 0 for integrated GPU)", "--gpuid".bold());
-                    println!("\n  {}, {} <MILLISEC> Change the update interval of the display [default: 1000]", "-u".bold(), "--update".bold());
-                    println!("  {}, {}        Change the temperature unit to °F", "-f".bold(), "--fahrenheit".bold());
-                    println!("  {}, {}             Enable the alarm", "-a".bold(), "--alarm".bold());
-                    println!("  {}, {} <DEGREE>   Rotate the display (LP Series only)", "-r".bold(), "--rotate".bold());
+                    println!(
+                        "  {}, {} <MODE>       Change the display mode of your device",
+                        "-m".bold(),
+                        "--mode".bold()
+                    );
+                    println!(
+                        "  {}, {} <MODE>  Change the secondary display mode of your device (if supported)",
+                        "-s".bold(),
+                        "--secondary".bold()
+                    );
+                    println!(
+                        "      {} <ID>          Specify the Product ID if multiple devices are connected",
+                        "--pid".bold()
+                    );
+                    println!(
+                        "      {} <PATH>        Use a specific hidraw device (e.g. /dev/hidraw3)",
+                        "--hidraw".bold()
+                    );
+                    println!(
+                        "      {} <VENDOR:ID> Specify the nth GPU of a specific vendor to monitor (use ID 0 for integrated GPU)",
+                        "--gpuid".bold()
+                    );
+                    println!(
+                        "\n  {}, {} <MILLISEC> Change the update interval of the display [default: 1000]",
+                        "-u".bold(),
+                        "--update".bold()
+                    );
+                    println!(
+                        "  {}, {}        Change the temperature unit to °F",
+                        "-f".bold(),
+                        "--fahrenheit".bold()
+                    );
+                    println!(
+                        "  {}, {}             Enable the alarm",
+                        "-a".bold(),
+                        "--alarm".bold()
+                    );
+                    println!(
+                        "  {}, {} <DEGREE>   Rotate the display (LP Series only)",
+                        "-r".bold(),
+                        "--rotate".bold()
+                    );
                     println!("\n{}", "Commands:".bold());
-                    println!("  {}, {}         Print Product ID of the connected devices", "-l".bold(), "--list".bold());
-                    println!("  {}, {}      Print all available GPUs", "-g".bold(), "--gpulist".bold());
+                    println!(
+                        "  {}, {}         Print Product ID of the connected devices",
+                        "-l".bold(),
+                        "--list".bold()
+                    );
+                    println!(
+                        "  {}, {}      Print all available GPUs",
+                        "-g".bold(),
+                        "--gpulist".bold()
+                    );
                     println!("  {}, {}         Print help", "-h".bold(), "--help".bold());
-                    println!("  {}, {}      Print version", "-v".bold(), "--version".bold());
+                    println!(
+                        "  {}, {}      Print version",
+                        "-v".bold(),
+                        "--version".bold()
+                    );
                     exit(0);
                 }
                 "-v" | "--version" => {
@@ -259,14 +327,13 @@ impl Args {
                             'u' => {
                                 if i + 1 < args.len() && args[i].ends_with('u') {
                                     match args[i + 1].parse::<u64>() {
-                                        Ok(val) => {
-                                            if val >= 100 && val <= 2000 {
-                                                update = Duration::from_millis(val);
-                                                i += 1;
-                                            } else {
-                                                error!("Update interval must be between 100 and 2000");
-                                                exit(1);
-                                            }
+                                        Ok(val) if (100..=2000).contains(&val) => {
+                                            update = Duration::from_millis(val);
+                                            i += 1;
+                                        }
+                                        Ok(_) => {
+                                            error!("Update interval must be between 100 and 2000");
+                                            exit(1);
                                         }
                                         Err(_) => {
                                             error!("Invalid update interval");
@@ -281,14 +348,13 @@ impl Args {
                             'r' => {
                                 if i + 1 < args.len() && args[i].ends_with('r') {
                                     match args[i + 1].parse::<u16>() {
-                                        Ok(val) => {
-                                            if [90, 180, 270].contains(&val) {
-                                                rotate = val;
-                                                i += 1;
-                                            } else {
-                                                error!("Rotation value must be one of 90, 180, or 270");
-                                                exit(1);
-                                            }
+                                        Ok(val) if [90, 180, 270].contains(&val) => {
+                                            rotate = val;
+                                            i += 1;
+                                        }
+                                        Ok(_) => {
+                                            error!("Rotation value must be one of 90, 180, or 270");
+                                            exit(1);
                                         }
                                         Err(_) => {
                                             error!("Invalid rotation value");
@@ -330,6 +396,7 @@ impl Args {
             fahrenheit,
             alarm,
             rotate,
+            hidraw,
         }
     }
 }
