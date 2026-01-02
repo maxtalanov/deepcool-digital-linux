@@ -53,47 +53,48 @@ impl Display {
         base[7] = 5;
 
         loop {
-            let mut pkt = base;
+            let mut status_data = data;
 
-            // CPU instant (always available)
+            // CPU instant (always works)
             let cpu_instant = self.cpu.read_instant();
 
-            // Optional energy → optional power
-            let power: u16 = self
-                .cpu
-                .read_energy()
-                .and_then(|energy| {
-                    self.cpu
-                        .get_power(energy, self.update.as_millis() as u64)
-                        .ok()
-                })
-                .unwrap_or(0);
+            // Energy may be 0 on Xeon / server CPUs
+            let cpu_energy = self.cpu.read_energy();
 
-            // Wait for update interval
             sleep(self.update);
 
-            // Power (safe: 0 if unavailable)
+            // Power (safe)
+            let power: u16 = if cpu_energy > 0 {
+                self.cpu.get_power(cpu_energy, self.update.as_millis() as u64)
+            } else {
+                0
+            };
+
             let power_bytes = power.to_be_bytes();
-            pkt[8] = power_bytes[0];
-            pkt[9] = power_bytes[1];
+            status_data[8] = power_bytes[0];
+            status_data[9] = power_bytes[1];
 
             // Temperature
             let temp = (self.cpu.get_temp(self.fahrenheit) as f32).to_be_bytes();
-            pkt[10] = if self.fahrenheit { 1 } else { 0 };
-            pkt[11] = temp[0];
-            pkt[12] = temp[1];
-            pkt[13] = temp[2];
-            pkt[14] = temp[3];
+            status_data[10] = if self.fahrenheit { 1 } else { 0 };
+            status_data[11] = temp[0];
+            status_data[12] = temp[1];
+            status_data[13] = temp[2];
+            status_data[14] = temp[3];
 
             // CPU usage
-            pkt[15] = self.cpu.get_usage(cpu_instant);
+            status_data[15] = self.cpu.get_usage(cpu_instant);
 
-            // Checksum + terminator
-            let checksum: u16 = pkt[1..=15].iter().map(|&x| x as u16).sum();
-            pkt[16] = (checksum % 256) as u8;
-            pkt[17] = 22;
+            // Checksum & terminator
+            let checksum: u16 = status_data[1..=15]
+                .iter()
+                .map(|&x| x as u16)
+                .sum();
 
-            device.write(&pkt).unwrap();
+            status_data[16] = (checksum % 256) as u8;
+            status_data[17] = 22;
+
+            device.write(&status_data).unwrap();
         }
     }
 }
