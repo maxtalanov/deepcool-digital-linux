@@ -41,19 +41,23 @@ impl Display {
         self.cpu.warn_temp();
         self.cpu.warn_rapl();
 
-        // Base HID packet
-        let mut base: [u8; 64] = [0; 64];
-        base[0] = 16;
-        base[1] = 104;
-        base[2] = 1;
-        base[3] = 2;
-        base[4] = 11;
-        base[5] = 1;
-        base[6] = 2;
-        base[7] = 5;
+        // Base HID packet (constant part)
+        let base_data: [u8; 64] = {
+            let mut d = [0u8; 64];
+            d[0] = 16;
+            d[1] = 104;
+            d[2] = 1;
+            d[3] = 2;
+            d[4] = 11;
+            d[5] = 1;
+            d[6] = 2;
+            d[7] = 5;
+            d
+        };
 
         loop {
-            let mut status_data = data;
+            // Start from base packet every iteration
+            let mut status_data = base_data;
 
             // CPU instant (always works)
             let cpu_instant = self.cpu.read_instant();
@@ -63,7 +67,7 @@ impl Display {
 
             sleep(self.update);
 
-            // Power (safe)
+            // Power (safe for servers)
             let power: u16 = if cpu_energy > 0 {
                 self.cpu.get_power(cpu_energy, self.update.as_millis() as u64)
             } else {
