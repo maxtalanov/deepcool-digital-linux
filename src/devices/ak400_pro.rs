@@ -7,6 +7,7 @@ use hidapi::{HidApi, HidDevice};
 use std::{thread::sleep, time::Duration};
 
 pub const DEFAULT_MODE: Mode = Mode::Auto;
+
 // The temperature limits are hard-coded in the device
 pub const TEMP_WARNING_C: u8 = 80;
 pub const TEMP_WARNING_F: u8 = 176;
@@ -21,7 +22,7 @@ pub struct Display {
 
 impl Display {
     pub fn new(cpu: Cpu, update: Duration, fahrenheit: bool) -> Self {
-        Display {
+        Self {
             cpu,
             update,
             fahrenheit,
@@ -36,56 +37,63 @@ impl Display {
 
     /// New entrypoint (already opened device, e.g. via --hidraw + open_path()).
     pub fn run_device(&self, device: HidDevice) {
-        // Display warning if a required module is missing
+        // Warn once; do NOT abort on server CPUs
         self.cpu.warn_temp();
         self.cpu.warn_rapl();
 
-        // Data packet base
-        let mut data: [u8; 64] = [0; 64];
-        data[0] = 16;
-        data[1] = 104;
-        data[2] = 1;
-        data[3] = 2;
-        data[4] = 11;
-        data[5] = 1;
-        data[6] = 2;
-        data[7] = 5;
+        // Base HID packet
+        let mut base: [u8; 64] = [0; 64];
+        base[0] = 16;
+        base[1] = 104;
+        base[2] = 1;
+        base[3] = 2;
+        base[4] = 11;
+        base[5] = 1;
+        base[6] = 2;
+        base[7] = 5;
 
         loop {
-            let mut status_data = data;
+            let mut pkt = base;
 
-            // Read CPU utilization & energy consumption
+            // CPU instant (always available)
             let cpu_instant = self.cpu.read_instant();
-            let cpu_energy = self.cpu.read_energy();
 
-            // Wait
+            // Optional energy → optional power
+            let power: u16 = self
+                .cpu
+                .read_energy()
+                .and_then(|energy| {
+                    self.cpu
+                        .get_power(energy, self.update.as_millis() as u64)
+                        .ok()
+                })
+                .unwrap_or(0);
+
+            // Wait for update interval
             sleep(self.update);
 
-            // Power consumption
-            let power = self
-                .cpu
-                .get_power(cpu_energy, self.update.as_millis() as u64)
-                .to_be_bytes();
-            status_data[8] = power[0];
-            status_data[9] = power[1];
+            // Power (safe: 0 if unavailable)
+            let power_bytes = power.to_be_bytes();
+            pkt[8] = power_bytes[0];
+            pkt[9] = power_bytes[1];
 
             // Temperature
             let temp = (self.cpu.get_temp(self.fahrenheit) as f32).to_be_bytes();
-            status_data[10] = if self.fahrenheit { 1 } else { 0 };
-            status_data[11] = temp[0];
-            status_data[12] = temp[1];
-            status_data[13] = temp[2];
-            status_data[14] = temp[3];
+            pkt[10] = if self.fahrenheit { 1 } else { 0 };
+            pkt[11] = temp[0];
+            pkt[12] = temp[1];
+            pkt[13] = temp[2];
+            pkt[14] = temp[3];
 
-            // Utilization
-            status_data[15] = self.cpu.get_usage(cpu_instant);
+            // CPU usage
+            pkt[15] = self.cpu.get_usage(cpu_instant);
 
-            // Checksum & termination byte
-            let checksum: u16 = status_data[1..=15].iter().map(|&x| x as u16).sum();
-            status_data[16] = (checksum % 256) as u8;
-            status_data[17] = 22;
+            // Checksum + terminator
+            let checksum: u16 = pkt[1..=15].iter().map(|&x| x as u16).sum();
+            pkt[16] = (checksum % 256) as u8;
+            pkt[17] = 22;
 
-            device.write(&status_data).unwrap();
+            device.write(&pkt).unwrap();
         }
     }
 }
