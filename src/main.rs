@@ -32,12 +32,6 @@ mod common_warnings {
         }
     }
 
-    pub fn alarm(args: &Args) {
-        if args.alarm {
-            warning!("Alarm is not supported, value will be ignored");
-        }
-    }
-
     pub fn alarm_hardcoded(args: &Args) {
         if args.alarm {
             warning!("The alarm is hard-coded in your device, value will be ignored");
@@ -59,42 +53,40 @@ fn main() {
 
     let pci_device = {
         let gpus = gpu::pci::get_gpu_list();
+
         if gpus.is_empty() {
             None
         } else {
-            match args.gpuid {
+            let selected = match args.gpuid {
                 Some((vendor, id)) => {
                     let mut nth = 1;
-                    let mut found = None;
 
                     if id > 0 {
-                        for gpu in &gpus {
-                            if gpu.vendor == vendor && gpu.bus > 0 {
-                                if nth == id {
-                                    found = Some(gpu.clone());
-                                    break;
-                                }
+                        gpus.iter()
+                            .filter(|g| g.vendor == vendor && g.bus > 0)
+                            .find(|_| {
+                                let ok = nth == id;
                                 nth += 1;
-                            }
-                        }
+                                ok
+                            })
+                            .cloned()
                     } else {
-                        let first = gpus.first().unwrap();
-                        if first.vendor == vendor && first.bus == 0 {
-                            found = Some(first.clone());
-                        }
+                        gpus.first()
+                            .filter(|g| g.vendor == vendor && g.bus == 0)
+                            .cloned()
                     }
-
-                    found.unwrap_or_else(|| {
-                        error!("No GPU was found with the specified GPUID");
-                        exit(1)
-                    })
                 }
                 None => gpus
                     .iter()
                     .find(|g| g.bus > 0)
                     .cloned()
                     .or_else(|| gpus.first().cloned()),
-            }
+            };
+
+            selected.or_else(|| {
+                error!("No GPU was found with the specified GPUID");
+                exit(1)
+            })
         }
     };
 
@@ -102,10 +94,12 @@ fn main() {
         Some(name) => println!("CPU MON.: {}", name.bright_green()),
         None => println!("CPU MON.: {}", "Unknown CPU".bright_green()),
     }
+
     match &pci_device {
         Some(gpu) => println!("GPU MON.: {}", gpu.name.bright_green()),
         None => println!("GPU MON.: {}", "none".bright_black()),
     }
+
     println!("-----");
 
     /* ================= HID ================= */
@@ -115,7 +109,6 @@ fn main() {
         exit(1);
     });
 
-    // --hidraw override
     let (product_id, forced_device): (u16, Option<HidDevice>) =
         if let Some(path) = &args.hidraw {
             if args.pid == 0 {
@@ -123,8 +116,10 @@ fn main() {
                 exit(1);
             }
 
-            let cpath =
-                CString::new(path.as_str()).unwrap_or_else(|_| device_error());
+            let cpath = CString::new(path.as_str()).unwrap_or_else(|_| {
+                error!("Invalid --hidraw path");
+                exit(1);
+            });
 
             let dev = api
                 .open_path(cpath.as_c_str())
@@ -137,20 +132,24 @@ fn main() {
             let mut pid = 0u16;
 
             for d in api.device_list() {
-                if d.vendor_id() == DEFAULT_VENDOR_ID {
-                    if args.pid == 0 || d.product_id() == args.pid {
-                        pid = d.product_id();
-                        println!(
-                            "Device found: {}",
-                            d.product_string().unwrap().bright_green()
-                        );
-                        break;
-                    }
+                if d.vendor_id() == DEFAULT_VENDOR_ID
+                    && (args.pid == 0 || d.product_id() == args.pid)
+                {
+                    pid = d.product_id();
+                    println!(
+                        "Device found: {}",
+                        d.product_string().unwrap_or("Unknown").bright_green()
+                    );
+                    break;
                 }
             }
 
             if pid == 0 {
-                error!("No DeepCool device was found");
+                if args.pid > 0 {
+                    error!("No DeepCool device was found with the specified PID");
+                } else {
+                    error!("No DeepCool device was found");
+                }
                 exit(1);
             }
 
@@ -167,11 +166,8 @@ fn main() {
         16 => {
             println!("Supported modes: {}", "auto".bold());
 
-            let ak400 = devices::ak400_pro::Display::new(
-                cpu,
-                args.update,
-                args.fahrenheit,
-            );
+            let ak400 =
+                devices::ak400_pro::Display::new(cpu, args.update, args.fahrenheit);
 
             print_device_status(
                 &devices::ak400_pro::DEFAULT_MODE,
@@ -213,9 +209,11 @@ fn main() {
         /* ===== UNSUPPORTED ===== */
         _ => {
             println!("Device not yet supported!");
+
             let dev = api
                 .open(DEFAULT_VENDOR_ID, product_id)
                 .unwrap_or_else(|_| device_error());
+
             let info = dev.get_device_info().unwrap();
 
             println!("Vendor ID: {}", info.vendor_id());
