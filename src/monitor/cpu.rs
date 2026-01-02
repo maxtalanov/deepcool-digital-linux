@@ -115,25 +115,26 @@ impl Cpu {
     }
 
     /// Returns highest core frequency in MHz. Fatal only if `/proc/cpuinfo` is broken.
-    pub fn get_frequency(&self) -> u16 {
-        let cpuinfo = read_to_string("/proc/cpuinfo").unwrap_or_else(|_| {
-            error!("Failed to get CPU clock");
-            exit(1);
-        });
+   pub fn get_frequency(&self) -> u16 {
+       let cpuinfo = read_to_string("/proc/cpuinfo").unwrap_or_else(|_| {
+           error!("Failed to get CPU clock");
+           exit(1);
+       });
 
-        let mut highest = 0.0;
-        for line in cpuinfo.lines() {
-            if let Some(rest) = line.strip_prefix("cpu MHz") {
-                if let Some(v) = rest.split(':').nth(1) {
-                    if let Ok(mhz) = v.trim().parse::<f32>() {
-                        highest = highest.max(mhz);
-                    }
-                }
-            }
-        }
+       let mut highest: f32 = 0.0;
 
-        highest.round() as u16
-    }
+       for line in cpuinfo.lines() {
+           if let Some(rest) = line.strip_prefix("cpu MHz") {
+               if let Some(v) = rest.split(':').nth(1) {
+                   if let Ok(mhz) = v.trim().parse::<f32>() {
+                       highest = highest.max(mhz);
+                   }
+               }
+           }
+       }
+
+       highest.round() as u16
+   }
 }
 
 /// Finds a supported hwmon temperature sensor.
